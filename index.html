@@ -11,7 +11,7 @@
 #task{top:12px;right:12px;padding:10px;width:330px}#task input,#task select,#task button{width:100%;margin-top:6px;padding:7px;border-radius:7px;border:1px solid #2a4c86;background:#0b1630;color:#dbe7ff}
 #task button{background:#1f6fff;border:0;font-weight:700;cursor:pointer}
 #kanban{left:12px;bottom:52px;width:min(760px,60vw);padding:8px;display:flex;gap:8px;max-height:30vh}
-.col{flex:1;min-width:0;overflow:hidden}.col h3{margin:2px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#7fb8ff}
+.col{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden}.col h3{margin:2px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#7fb8ff}
 .card{font-size:11px;background:#0e1d3a;border-left:3px solid #4a8cff;padding:4px 6px;margin-bottom:4px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card b{color:#9fd0ff}
 #ticker{left:0;right:0;bottom:0;height:40px;border-radius:0;overflow:hidden;white-space:nowrap;display:flex;align-items:center}
@@ -315,14 +315,36 @@ const $=id=>document.getElementById(id);let ticks=[];
 const tnow=()=>new Date().toLocaleTimeString('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit'});
 function feed(msg){ticks.unshift(`[${tnow()} CT] ${msg}`);ticks=ticks.slice(0,14);$('tickin').textContent=ticks.join('   •   ')}
 let cards=[];let cid=0;
-function renderK(){for(const [k,s] of [['kq','queued'],['kw','working'],['kd','done']])$(k).innerHTML=cards.filter(c=>c.s===s).slice(-7).reverse().map(c=>`<div class="card" style="border-color:#${bots[c.bot].col.toString(16).padStart(6,'0')}"><b>${c.bot}</b> · ${c.t}</div>`).join('')}
+const ALIAS={'Grok Bot':'Chief Bot'};const deskOf=n=>bots[n]?n:(ALIAS[n]&&bots[ALIAS[n]]?ALIAS[n]:null);
+const COLOF={queued:'queued',working:'working',thinking:'working',waiting:'working',blocked:'working',done:'done'};
+const esc=x=>String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function renderK(){for(const [k,s] of [['kq','queued'],['kw','working'],['kd','done']]){const L=cards.filter(c=>c.s===s).sort((x,y)=>(y.ts||0)-(x.ts||0)).slice(0,12);$(k).innerHTML=L.map(c=>`<div class="card" title="${esc(c.bot+' · '+c.t)}" style="border-color:#${bots[c.desk].col.toString(16).padStart(6,'0')}"><b>${esc(c.bot)}</b> · ${esc(c.t)}</div>`).join('')}}
+function setAvatar(name,state,task){const b=bots[name];if(!b)return;if(b.state===state&&b.task===(task||''))return;b.state=state;b.task=task||'';
+ const c=STATES[state]||STATES.idle;b.orb.material.color.setHex(c.c);b.orb.material.emissive.setHex(c.c);
+ b.log.unshift(`${tnow()} — ${c.l}${b.task?': '+b.task:''}`);b.log=b.log.slice(0,12);if(sel===name)showSide(name)}
 function setState(name,state,task){const b=bots[name];if(!b)return;b.state=state;if(task)b.task=task;
  const c=STATES[state]||STATES.idle;b.orb.material.color.setHex(c.c);b.orb.material.emissive.setHex(c.c);
  b.log.unshift(`${tnow()} — ${c.l}${b.task?': '+b.task:''}`);b.log=b.log.slice(0,12);
- const card=cards.findLast(x=>x.bot===name&&x.s!=='done');
- if(card){if(state==='working'||state==='thinking'||state==='waiting'||state==='blocked')card.s='working';if(state==='done')card.s='done'}
+ const card=cards.findLast(x=>x.local&&x.desk===name&&x.s!=='done');
+ if(card){if(COLOF[state]==='working')card.s='working';if(state==='done')card.s='done';card.ts=Date.now()}
  if(state==='done')burst(b);feed(`${name}: ${c.l}${task?' — '+task:b.task?' — '+b.task:''}`);renderK();if(sel===name)showSide(name)}
-function assign(name,task,fromPos){const b=bots[name];cards.push({id:cid++,bot:name,t:task,s:'queued'});if(cards.length>60)cards.shift();renderK();
+// Full-list sync: rows [{bot,state,task,ts}] replace the board. Cards keyed by bot|task.
+let firstSync=true;
+function applyRows(rows){const prev=new Map(cards.map(c=>[c.key,c]));const next=[];const seen=new Set();const avatar={};
+ for(const r of rows){const desk=deskOf((r.bot||'').trim());if(!desk)continue;const bot=r.bot.trim();const state=(r.state||'idle').trim().toLowerCase()||'idle';const task=(r.task||'').trim().slice(0,60);const ts=+new Date(r.ts)||0;
+  if(state!=='done'&&state!=='idle'&&STATES[state]){const a=avatar[desk];if(!a||ts>=a.ts)avatar[desk]={state,task,ts}}
+  const col=COLOF[state];if(!col||!task)continue;const key=bot+'|'+task;if(seen.has(key)){const c=next.find(x=>x.key===key);if(ts>=c.ts){c.s=col;c.ts=ts}continue}seen.add(key);
+  const old=prev.get(key);const card={key,bot,desk,t:task,s:col,ts,local:false};next.push(card);
+  if(!firstSync&&(!old||old.s!==col)){feed(`${bot}: ${col==='done'?'Done':col==='queued'?'Queued':STATES[state].l} — ${task}`);if(col==='done'&&old)burst(bots[desk])}}
+ for(const c of cards)if(c.local&&!seen.has(c.key))next.push(c);
+ cards=next;
+ if(firstSync){const n=k=>cards.filter(c=>c.s===k).length;feed(`Board synced: ${n('queued')} queued, ${n('working')} working, ${n('done')} done`);firstSync=false}
+ for(const name of Object.keys(bots)){if(cards.some(c=>c.local&&c.desk===name&&c.s!=='done'))continue;const a=avatar[name];
+  // queued rows don't change the avatar: bot stays idle until it is actually working
+  if(a&&a.state!=='queued')setAvatar(name,a.state,a.task);else setAvatar(name,'idle',a?a.task:'')}
+ renderK()}
+window.applyRows=applyRows;
+function assign(name,task,fromPos){const b=bots[name];cards.push({id:cid++,key:name+'|'+task,bot:name,desk:name,t:task,s:'queued',ts:Date.now(),local:true});renderK();
  grokSpin=1.2;feed(`Grok Bot routed "${task}" → ${name}`);
  sendPacket(fromPos||GROK_POS,name,()=>{b.task=task;setState(name,'thinking',task);
   setTimeout(()=>{setState(name,'working');
@@ -343,11 +365,11 @@ function showSide(n){const b=bots[n];sel=n;$('side').style.display='block';$('sn
 R.domElement.addEventListener('click',e=>{mv.set(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);ray.setFromCamera(mv,cam);
  for(const h of ray.intersectObjects(scene.children,true)){let o=h.object;while(o){const f=Object.values(bots).find(b=>b.room===o||b.bot.g===o);if(f){showSide(f.n);return}o=o.parent}}});
 // public API
-window.postBotEvent=({bot,state,task})=>{if(!bots[bot])return console.warn('unknown bot',bot);if(task&&bots[bot].task!==task&&!cards.find(c=>c.bot===bot&&c.t===task))cards.push({id:cid++,bot,t:task,s:'queued'});setState(bot,state||'working',task)};
+window.postBotEvent=({bot,state,task,ts})=>{const d=deskOf(bot);if(!d)return console.warn('unknown bot',bot);const rows=cards.map(c=>({bot:c.bot,state:c.s==='working'?'working':c.s,task:c.t,ts:new Date(c.ts).toISOString()})).filter(r=>r.bot+'|'+r.task!==bot+'|'+(task||''));rows.push({bot,state:state||'working',task:task||'',ts:ts||new Date().toISOString()});applyRows(rows)};
 window.BOT_NAMES=Object.keys(bots);
 const CSV='https://docs.google.com/spreadsheets/d/1bgTWSgIuinUBZyUkxKt97YCJ6P_e-cUlr7zseYRKlxE/export?format=csv';
 function parseCSV(t){const rows=[];let r=[],f='',q=false;for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c=='"'){if(t[i+1]=='"'){f+='"';i++}else q=false}else f+=c}else if(c=='"')q=true;else if(c==','){r.push(f);f=''}else if(c=='\n'){r.push(f);rows.push(r);r=[];f=''}else if(c!='\r')f+=c}if(f||r.length){r.push(f);rows.push(r)}return rows}
-const lastSeen={};async function poll(){try{const r=await fetch(CSV,{cache:'no-store'});if(!r.ok)return;const rows=parseCSV(await r.text());const h=(rows.shift()||[]).map(x=>x.trim().toLowerCase());const ix=k=>h.indexOf(k);for(const row of rows){const bot=(row[ix('bot')]||'').trim();if(!bots[bot])continue;const state=(row[ix('state')]||'idle').trim()||'idle';const task=(row[ix('task')]||'').trim().slice(0,60);const key=state+'|'+task+'|'+(row[ix('ts')]||'');if(lastSeen[bot]===key)continue;lastSeen[bot]=key;if(state==='idle'){if(bots[bot].state!=='idle')setState(bot,'idle')}else window.postBotEvent({bot,state,task})}}catch(e){}}
+async function poll(){try{const r=await fetch(window.CSV_URL||CSV,{cache:'no-store'});if(!r.ok)return;const rows=parseCSV(await r.text());const h=(rows.shift()||[]).map(x=>x.trim().toLowerCase());const ix=k=>h.indexOf(k);applyRows(rows.filter(x=>x.length>1).map(x=>({bot:x[ix('bot')]||'',state:x[ix('state')]||'',task:x[ix('task')]||'',ts:x[ix('ts')]||''})))}catch(e){console.warn('poll',e)}}
 poll();setInterval(poll,60000);
 // demo
 let demo=false;
